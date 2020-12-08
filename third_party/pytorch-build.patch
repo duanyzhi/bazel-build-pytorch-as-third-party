@@ -1,0 +1,610 @@
+From 88864b7aa7cff4f31f667e5a3661cdb02a6c3315 Mon Sep 17 00:00:00 2001
+From: duanyzhi <duanyzhi@outlook.com>
+Date: Mon, 7 Dec 2020 18:13:44 +0800
+Subject: [PATCH] pytorch build
+
+---
+ BUILD.bazel                                 |  41 ++++--
+ aten/src/ATen/core/dispatch/OperatorEntry.h |   1 +
+ caffe2/core/common.h                        |   2 +-
+ caffe2/core/macros.h                        |   4 -
+ caffe2/utils/cblas.h                        |   2 +-
+ third_party/asmjit.BUILD                    |  28 ++++
+ third_party/gloo.BUILD                      |   6 +-
+ third_party/mkl-dnn.BUILD                   |   6 +-
+ third_party/mkl.BUILD                       |   2 +-
+ third_party/sleef.BUILD                     |   2 +-
+ third_party/tbb.BUILD                       |   4 +-
+ third_party/workspace.bzl                   | 218 ++++++++++++++++++++++++++++
+ tools/config/defs.bzl                       |   2 +-
+ tools/setup_helpers/generate_code.py        |   2 +-
+ 14 files changed, 293 insertions(+), 27 deletions(-)
+ delete mode 100644 caffe2/core/macros.h
+ create mode 100644 third_party/asmjit.BUILD
+ create mode 100644 third_party/workspace.bzl
+
+diff --git a/BUILD.bazel b/BUILD.bazel
+index 4095bcb..e984d90 100644
+--- a/BUILD.bazel
++++ b/BUILD.bazel
+@@ -2,11 +2,11 @@ load("@bazel_skylib//lib:paths.bzl", "paths")
+ load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
+ load("@rules_proto//proto:defs.bzl", "proto_library")
+ load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_proto_library", "cc_test")
+-load("//third_party:substitution.bzl", "template_rule")
+-load("//:tools/build_variables.bzl", "torch_cpp_srcs", "libtorch_python_core_sources", "libtorch_core_sources", "libtorch_distributed_sources", "libtorch_extra_sources", "jit_core_sources")
+-load("//tools/rules:cu.bzl", "cu_library")
+-load("//tools/config:defs.bzl", "if_cuda")
+-load("//:aten.bzl", "intern_build_aten_ops")
++load("@org_pytorch//third_party:substitution.bzl", "template_rule")
++load("@org_pytorch//:tools/build_variables.bzl", "torch_cpp_srcs", "libtorch_python_core_sources", "libtorch_core_sources", "libtorch_distributed_sources", "libtorch_extra_sources", "jit_core_sources")
++load("@org_pytorch//tools/rules:cu.bzl", "cu_library")
++load("@org_pytorch//tools/config:defs.bzl", "if_cuda")
++load("@org_pytorch//:aten.bzl", "intern_build_aten_ops")
+ 
+ COMMON_COPTS = [
+     "-DHAVE_MALLOC_USABLE_SIZE=1",
+@@ -66,6 +66,7 @@ cc_library(
+         "@com_github_gflags_gflags//:gflags",
+         "@com_github_glog//:glog",
+     ],
++    visibility = ["//visibility:public"],
+ )
+ 
+ cc_library(
+@@ -88,6 +89,7 @@ cc_library(
+         ["@cuda"],
+         [],
+     ),
++    includes = ["."],
+     alwayslink = True,
+ )
+ 
+@@ -106,6 +108,7 @@ cc_test(
+         ":c10_headers",
+         "@com_google_googletest//:gtest_main",
+     ],
++    includes = ["."],
+ )
+ 
+ py_binary(
+@@ -143,8 +146,14 @@ genrule(
+         "aten/src/ATen/core/TensorMethods.cpp",
+         "aten/src/ATen/core/ATenOpList.cpp",
+     ],
+-    cmd = "$(location :gen) --source-path aten/src/ATen --install_dir `dirname $(location aten/src/ATen/Declarations.yaml)` aten/src/ATen/Declarations.cwrap aten/src/THCUNN/generic/THCUNN.h aten/src/ATen/nn.yaml aten/src/ATen/native/native_functions.yaml",
++    cmd = "$(location :gen) --source-path `pwd`/external/org_pytorch/aten/src/ATen \
++        --install_dir `dirname $(location aten/src/ATen/Declarations.yaml)` \
++        external/org_pytorch/aten/src/ATen/Declarations.cwrap \
++        external/org_pytorch/aten/src/THCUNN/generic/THCUNN.h \
++        external/org_pytorch/aten/src/ATen/nn.yaml \
++        external/org_pytorch/aten/src/ATen/native/native_functions.yaml",
+     tools = [":gen"],
++    visibility = ["//visibility:public"],
+ )
+ 
+ py_library(
+@@ -161,6 +170,7 @@ py_library(
+         "tools/autograd/templates/*",
+     ]),
+     deps = [":code_template"],
++    visibility = ["//visibility:public"],
+ )
+ 
+ py_library(
+@@ -176,6 +186,7 @@ py_binary(
+         ":tools_autograd",
+         ":tools_jit",
+     ],
++    visibility = ["//visibility:public"],
+ )
+ 
+ libtorch_cpp_generated_sources = [
+@@ -221,20 +232,25 @@ genrule(
+         "aten/src/ATen/Declarations.yaml",
+     ],
+     outs = libtorch_cpp_generated_sources + libtorch_python_generated_sources,
+-    cmd = "$(location :generate_code) --install_dir `dirname $(location torch/csrc/autograd/generated/variable_factories.h)`/../.. --declarations-path $(location aten/src/ATen/Declarations.yaml) --nn-path aten/src",
++    cmd = "$(location :generate_code) \
++        --install_dir `dirname $(location torch/csrc/autograd/generated/variable_factories.h)`/../.. \
++        --declarations-path $(location aten/src/ATen/Declarations.yaml) --nn-path aten/src",
+     tools = [":generate_code"],
++    visibility = ["//visibility:public"],
+ )
+ 
+ filegroup(
+     name = "cpp_generated_code",
+     data = [":all_generated_code"],
+     srcs = libtorch_cpp_generated_sources,
++    visibility = ["//visibility:public"],
+ )
+ 
+ filegroup(
+     name = "python_generated_code",
+     data = [":all_generated_code"],
+     srcs = libtorch_python_generated_sources,
++    visibility = ["//visibility:public"],
+ )
+ 
+ exports_files(
+@@ -600,6 +616,7 @@ cc_library(
+         ":aten_src_ATen_config",
+     ],
+     includes = [
++        ".",
+         "aten/src",
+         "aten/src/TH",
+     ],
+@@ -1649,6 +1666,7 @@ cc_library(
+     ])),
+     copts = CAFFE2_COPTS,
+     includes = [
++        ".",
+         "caffe2/contrib/aten",
+         "caffe2/core/nomnigraph/include",
+         "third_party/miniz-2.0.8",
+@@ -1724,7 +1742,7 @@ cc_library(
+         "@fbgemm//:fbgemm_src_headers",
+         "@foxi",
+         "@gloo",
+-        "@onnx",
++        "@onnx_torch//:onnx",
+         "@fmt",
+         "@tensorpipe",
+     ] + if_cuda(
+@@ -1805,6 +1823,7 @@ cc_library(
+         "-mavx",
+     ],
+     visibility = ["//visibility:public"],
++    includes = ["."],
+     deps = [
+         ":caffe2_headers",
+         ":c10",
+@@ -1883,7 +1902,7 @@ cc_library(
+         ":c10_headers",
+         ":caffe2_headers",
+         "@local_config_python//:python_headers",
+-        "@onnx",
++        "@onnx_torch//:onnx",
+     ],
+     alwayslink = True,
+ )
+@@ -1917,6 +1936,9 @@ cc_library(
+         "CAFFE2_NIGHTLY_VERSION=20200115",
+     ],
+     visibility = ["//visibility:public"],
++    includes = [
++        ".",
++    ],
+     deps = [
+         ":caffe2",
+         ":torch_headers",
+@@ -1938,6 +1960,7 @@ cc_library(
+         "**/*.h",
+         "**/*.cuh",
+     ]) + [
++        #":cpp_generated_code",
+         ":generated_code",
+     ],
+     includes = [
+diff --git a/aten/src/ATen/core/dispatch/OperatorEntry.h b/aten/src/ATen/core/dispatch/OperatorEntry.h
+index 057eddb..a8f34b4 100644
+--- a/aten/src/ATen/core/dispatch/OperatorEntry.h
++++ b/aten/src/ATen/core/dispatch/OperatorEntry.h
+@@ -5,6 +5,7 @@
+ #include <ATen/core/dispatch/CppSignature.h>
+ #include <ATen/core/dispatch/RegistrationHandleRAII.h>
+ #include <list>
++#include <iostream>
+ 
+ namespace c10 {
+ namespace impl {
+diff --git a/caffe2/core/common.h b/caffe2/core/common.h
+index 076d83b..e8ef962 100644
+--- a/caffe2/core/common.h
++++ b/caffe2/core/common.h
+@@ -24,7 +24,7 @@
+ 
+ // Macros used during the build of this caffe2 instance. This header file
+ // is automatically generated by the cmake script during build.
+-#include "caffe2/core/macros.h"
++#include <caffe2/core/macros.h>
+ 
+ #include <c10/macros/Macros.h>
+ 
+diff --git a/caffe2/core/macros.h b/caffe2/core/macros.h
+deleted file mode 100644
+index ccc0b1b..0000000
+--- a/caffe2/core/macros.h
++++ /dev/null
+@@ -1,4 +0,0 @@
+-#pragma once
+-
+-// This is a placeholder. The real content will be generated by the cmake
+-// script.
+diff --git a/caffe2/utils/cblas.h b/caffe2/utils/cblas.h
+index c91b8bf..e549b92 100644
+--- a/caffe2/utils/cblas.h
++++ b/caffe2/utils/cblas.h
+@@ -1,7 +1,7 @@
+ // This is the exact cblas.h header file, placed here purely in order to get
+ // the enums.
+ 
+-#include "caffe2/core/macros.h"
++#include <caffe2/core/macros.h>
+ 
+ #ifndef CBLAS_H
+ #ifdef CAFFE2_USE_MKL
+diff --git a/third_party/asmjit.BUILD b/third_party/asmjit.BUILD
+new file mode 100644
+index 0000000..13fadb2
+--- /dev/null
++++ b/third_party/asmjit.BUILD
+@@ -0,0 +1,28 @@
++load("@rules_cc//cc:defs.bzl", "cc_library")
++
++cc_library(
++    name = "asmjit",
++    srcs = glob([
++        "src/asmjit/core/*.cpp",
++        "src/asmjit/x86/*.cpp",
++    ]),
++    hdrs = glob([
++        "src/asmjit/x86/*.h",
++        "src/asmjit/core/*.h",
++        "src/asmjit/*.h",
++    ]),
++    copts = [
++        "-DASMJIT_STATIC",
++        "-fno-tree-vectorize",
++        "-std=c++17",
++        "-fmerge-all-constants",
++        "-std=gnu++11",
++        "-DTH_BLAS_MKL",
++    ],
++    includes = [
++        "asmjit/",
++        "src/",
++    ],
++    linkstatic = True,
++    visibility = ["//visibility:public"],
++)
+diff --git a/third_party/gloo.BUILD b/third_party/gloo.BUILD
+index e73b977..42f534b 100644
+--- a/third_party/gloo.BUILD
++++ b/third_party/gloo.BUILD
+@@ -1,7 +1,7 @@
+ load("@rules_cc//cc:defs.bzl", "cc_library")
+-load("@//tools/rules:cu.bzl", "cu_library")
+-load("@//third_party:substitution.bzl", "template_rule")
+-load("@//tools/config:defs.bzl", "if_cuda")
++load("@org_pytorch//tools/rules:cu.bzl", "cu_library")
++load("@org_pytorch//third_party:substitution.bzl", "template_rule")
++load("@org_pytorch//tools/config:defs.bzl", "if_cuda")
+ 
+ template_rule(
+     name = "gloo_config_cmake_macros",
+diff --git a/third_party/mkl-dnn.BUILD b/third_party/mkl-dnn.BUILD
+index e78a487..9f94bde 100644
+--- a/third_party/mkl-dnn.BUILD
++++ b/third_party/mkl-dnn.BUILD
+@@ -1,5 +1,5 @@
+ load("@rules_cc//cc:defs.bzl", "cc_library")
+-load("@//third_party:substitution.bzl", "template_rule")
++load("@org_pytorch//third_party:substitution.bzl", "template_rule")
+ 
+ template_rule(
+     name = "include_dnnl_version",
+@@ -55,7 +55,7 @@ cc_library(
+         "-fno-strict-overflow",
+         "-fopenmp",
+     ] + select({
+-        "@//tools/config:thread_sanitizer": ["-DMKLDNN_THR=0"],
++        "@org_pytorch//tools/config:thread_sanitizer": ["-DMKLDNN_THR=0"],
+         "//conditions:default": ["-DMKLDNN_THR=2"],
+     }),
+     includes = [
+@@ -72,7 +72,7 @@ cc_library(
+     deps = [
+         "@mkl",
+     ] + select({
+-        "@//tools/config:thread_sanitizer": [],
++        "@org_pytorch//tools/config:thread_sanitizer": [],
+         "//conditions:default": ["@tbb"],
+     }),
+ )
+diff --git a/third_party/mkl.BUILD b/third_party/mkl.BUILD
+index bc868b2..92bb912 100644
+--- a/third_party/mkl.BUILD
++++ b/third_party/mkl.BUILD
+@@ -13,7 +13,7 @@ cc_library(
+         "libmkl_vml_avx512.so",
+         "libmkl_vml_def.so",
+     ] + select({
+-        "@//tools/config:thread_sanitizer": [],
++        "@org_pytorch//tools/config:thread_sanitizer": [],
+         "//conditions:default": ["libmkl_tbb_thread.so"],
+     }),
+     visibility = ["//visibility:public"],
+diff --git a/third_party/sleef.BUILD b/third_party/sleef.BUILD
+index c8ab702..73ad984a 100644
+--- a/third_party/sleef.BUILD
++++ b/third_party/sleef.BUILD
+@@ -1,5 +1,5 @@
+ load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+-load("@//third_party:sleef.bzl", "sleef_cc_library")
++load("@org_pytorch//third_party:sleef.bzl", "sleef_cc_library")
+ 
+ SLEEF_COPTS = [
+     "-DHAVE_MALLOC_USABLE_SIZE=1",
+diff --git a/third_party/tbb.BUILD b/third_party/tbb.BUILD
+index b7e18c9..42ce7c0 100644
+--- a/third_party/tbb.BUILD
++++ b/third_party/tbb.BUILD
+@@ -1,11 +1,11 @@
+ load("@rules_cc//cc:defs.bzl", "cc_library")
+-load("@//third_party:substitution.bzl", "template_rule")
++load("@org_pytorch//third_party:substitution.bzl", "template_rule")
+ 
+ licenses(["notice"])  # Apache 2.0
+ 
+ template_rule(
+     name = "version_string",
+-    src = "@//:aten/src/ATen/cpu/tbb/extra/version_string.ver.in",
++    src = "@org_pytorch//:aten/src/ATen/cpu/tbb/extra/version_string.ver.in",
+     out = "version_string.h",
+     substitutions = {
+         "@CMAKE_SYSTEM_NAME@": "Unknown",
+diff --git a/third_party/workspace.bzl b/third_party/workspace.bzl
+new file mode 100644
+index 0000000..10ee784
+--- /dev/null
++++ b/third_party/workspace.bzl
+@@ -0,0 +1,218 @@
++load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
++load("@org_pytorch//tools/rules:workspace.bzl", "new_patched_local_repository")
++load("@bazel_tools//tools/build_defs/repo:git.bzl", "new_git_repository")
++
++def torch_http_archive():
++    http_archive(
++        name = "bazel_skylib",
++        urls = [
++            "https://github.com/bazelbuild/bazel-skylib/releases/download/1.0.2/bazel-skylib-1.0.2.tar.gz",
++        ],
++        sha256 = "97e70364e9249702246c0e9444bccdc4b847bed1eb03c5a3ece4f83dfe6abc44",
++    )
++    
++    http_archive(
++        name = "com_google_googletest",
++        strip_prefix = "googletest-cd6b9ae3243985d4dc725abd513a874ab4161f3e",
++        urls = [
++            "https://github.com/google/googletest/archive/cd6b9ae3243985d4dc725abd513a874ab4161f3e.tar.gz",
++        ],
++        sha256 = "720614598ba49dd214d9d0c40b8ac4b1352fff7f2bb387a3f24bf080383828cb",
++    )
++    
++    http_archive(
++        name = "pybind11_bazel",
++        strip_prefix = "pybind11_bazel-7f397b5d2cc2434bbd651e096548f7b40c128044",
++        urls = ["https://github.com/pybind/pybind11_bazel/archive/7f397b5d2cc2434bbd651e096548f7b40c128044.zip"],
++        sha256 = "e4a9536f49d4a88e3c5a09954de49c4a18d6b1632c457a62d6ec4878c27f1b5b",
++    )
++
++    http_archive(
++        name = "com_github_glog",
++        strip_prefix = "glog-0.4.0",
++        urls = [
++            "https://github.com/google/glog/archive/v0.4.0.tar.gz",
++        ],
++        sha256 = "f28359aeba12f30d73d9e4711ef356dc842886968112162bc73002645139c39c",
++    )
++    
++    http_archive(
++        name = "com_github_gflags_gflags",
++        strip_prefix = "gflags-2.2.2",
++        urls = [
++            "https://github.com/gflags/gflags/archive/v2.2.2.tar.gz",
++        ],
++        sha256 = "34af2f15cf7367513b352bdcd2493ab14ce43692d2dcd9dfc499492966c64dcf",
++    )
++    
++    http_archive(
++        name = "mkl",
++        build_file = "@org_pytorch//third_party:mkl.BUILD",
++        strip_prefix = "lib",
++        sha256 = "59154b30dd74561e90d547f9a3af26c75b6f4546210888f09c9d4db8f4bf9d4c",
++        urls = [
++            "https://anaconda.org/anaconda/mkl/2020.0/download/linux-64/mkl-2020.0-166.tar.bz2",
++        ],
++    )
++    
++    http_archive(
++        name = "mkl_headers",
++        build_file = "@org_pytorch//third_party:mkl_headers.BUILD",
++        sha256 = "2af3494a4bebe5ddccfdc43bacc80fcd78d14c1954b81d2c8e3d73b55527af90",
++        urls = [
++            "https://anaconda.org/anaconda/mkl-include/2020.0/download/linux-64/mkl-include-2020.0-166.tar.bz2",
++        ],
++    )
++    
++    http_archive(
++        name = "rules_python",
++        url = "https://github.com/bazelbuild/rules_python/releases/download/0.0.1/rules_python-0.0.1.tar.gz",
++        sha256 = "aa96a691d3a8177f3215b14b0edc9641787abaaa30363a080165d06ab65e1161",
++    )
++
++    # for local local_repository
++    http_archive(
++        name = "com_google_protobuf",
++        strip_prefix = "protobuf-d0bfd5221182da1a7cc280f3337b5e41a89539cf",
++        url = "https://github.com/protocolbuffers/protobuf/archive/d0bfd5221182da1a7cc280f3337b5e41a89539cf.zip",
++        sha256 = "c5fd8f99f0d30c6f9f050bf008e021ccc70d7645ac1f64679c6038e07583b2f3",
++    )
++
++    http_archive(
++        name = "fbgemm",
++        strip_prefix = "FBGEMM-7d673046a6a3ad1fa0d15dfb189cd06ffa217041",
++        url = "https://github.com/pytorch/FBGEMM/archive/7d673046a6a3ad1fa0d15dfb189cd06ffa217041.zip",
++        sha256 = "78786178f45b224564774a968bc0773ccec9fd487abc6981ac6441c7822b347c",
++    )
++    
++    http_archive(
++        name = "asmjit",
++        strip_prefix = "asmjit-9057aa30b620f0662ff51e2230c126a345063064",
++        url = "https://github.com/asmjit/asmjit/archive/9057aa30b620f0662ff51e2230c126a345063064.zip",
++        sha256 = "22943944e8e26f66be4dff9decf0ecfde0da06b4a23831ba43d4921d02a996c5",
++        build_file = "@org_pytorch//third_party:asmjit.BUILD",
++    )
++
++    http_archive(
++        name = "ideep",
++        strip_prefix = "ideep-938cc68897bb46b8d4b228966edd9e23e471cf3b",
++        url = "https://github.com/intel/ideep/archive/938cc68897bb46b8d4b228966edd9e23e471cf3b.zip",
++        sha256 = "4e969ed11c5274d4a64c4602e1bf19482e95162a26a7950827c937f69c3b66c9",
++        build_file = "@org_pytorch//third_party:ideep.BUILD",
++    )
++
++    http_archive(
++        name = "mkl_dnn",
++        strip_prefix = "oneDNN-e2ac1fac44c5078ca927cb9b90e1b3066a0b2ed0",
++        url = "https://github.com/oneapi-src/oneDNN/archive/e2ac1fac44c5078ca927cb9b90e1b3066a0b2ed0.zip",
++        sha256 = "016fb6ee673ef81801d149f59d94203a622e684d6ebe418727dbdf78ec1dceee",
++        build_file = "@org_pytorch//third_party:mkl-dnn.BUILD",
++    )
++
++    http_archive(
++        name = "tbb",
++        strip_prefix = "oneTBB-a51a90bc609bb73db8ea13841b5cf7aa4344d4a9",
++        url = "https://github.com/oneapi-src/oneTBB/archive/a51a90bc609bb73db8ea13841b5cf7aa4344d4a9.zip",
++        sha256 = "a2e2e6537820fe7864eb95ca3d0c4e54c0af59af1b49297c2fcff55a1ffe5bca",
++        build_file = "@org_pytorch//third_party:tbb.BUILD",
++        patch_args = ["-p1"],
++        patches = ["@org_pytorch//third_party:tbb.patch"],
++    )
++
++    http_archive(
++        name = "cpuinfo",
++        strip_prefix = "cpuinfo-63b254577ed77a8004a9be6ac707f3dccc4e1fd9",
++        url = "https://github.com/pytorch/cpuinfo/archive/63b254577ed77a8004a9be6ac707f3dccc4e1fd9.zip",
++        sha256 = "1e179083c4c5240aa4d2fae36f8ef9c38aa918f85dce544ee7b2dd3578ebf8ee",
++        build_file = "@org_pytorch//third_party:cpuinfo.BUILD",
++    )
++
++    http_archive(
++        name = "onnx_torch",
++        strip_prefix = "onnx-a82c6a7010e2e332d8f74ad5b0c726fd47c85376",
++        url = "https://github.com/onnx/onnx/archive/a82c6a7010e2e332d8f74ad5b0c726fd47c85376.zip",
++        sha256 = "4fa49876dc3ee7ab110f458931d5f90edb4a9bbd70fc613ed39c64033803a073",
++        build_file = "@org_pytorch//third_party:onnx.BUILD",
++    )
++
++    http_archive(
++        name = "pybind11",
++        strip_prefix = "pybind11-25abf7efba0b2990f5a6dfb0a31bc65c0f2f4d17",
++        url = "https://github.com/pybind/pybind11/archive/25abf7efba0b2990f5a6dfb0a31bc65c0f2f4d17.zip",
++        sha256 = "5a6d4fce07761cfd64b912fadc0e9d387429bf142101d063b04cb50a8c7e88ce",
++        build_file = "@pybind11_bazel//:pybind11.BUILD",
++    )
++
++    http_archive(
++        name = "gloo",
++        strip_prefix = "gloo-113bde13035594cafdca247be953610b53026553",
++        url = "https://github.com/facebookincubator/gloo/archive/113bde13035594cafdca247be953610b53026553.zip",
++        sha256 = "72dac54a2b6c2c0c1b5cd6e6e42168efdeb77a81a48b7ae68d48d68c654b5eb4",
++        build_file = "@org_pytorch//third_party:gloo.BUILD",
++    )
++
++    http_archive(
++        name = "foxi",
++        strip_prefix = "foxi-8015abb727dfc9e223bfd293730daa9138f1f9c4",
++        url = "https://github.com/houseroad/foxi/archive/8015abb727dfc9e223bfd293730daa9138f1f9c4.zip",
++        sha256 = "37b23bd9237fdc468476d935d7e7c869eaff0e39660167cbfc8cfe9662670364",
++        build_file = "@org_pytorch//third_party:foxi.BUILD",
++    )
++
++    http_archive(
++        name = "eigen",
++        strip_prefix = "eigen-git-mirror-d41dc4dd74acce21fb210e7625d5d135751fa9e5",
++        url = "https://github.com/eigenteam/eigen-git-mirror/archive/d41dc4dd74acce21fb210e7625d5d135751fa9e5.zip",
++        sha256 = "d5b6ed3772704ed8cde27133ede0fecdd5bdabf12f4702b0523553d81596e18a",
++        build_file = "@org_pytorch//third_party:eigen.BUILD",
++    )
++
++    http_archive(
++        name = "sleef",
++        strip_prefix = "sleef-3.5.1",
++        #url = "https://github.com/shibatch/sleef/archive/master.zip",
++        url = "https://github.com/shibatch/sleef/archive/3.5.1.zip",
++        #sha256 = "eb8a91a486b131b1d6d11896fb09b51597e774e599baed17dd6ff4e1b946e805",
++        sha256 = "3a0d233b39f7be63269fc7a045bcbb21570fa45d99f52a315de2be6425376032",
++        build_file = "@org_pytorch//third_party:sleef.BUILD",
++    )
++
++    http_archive(
++        name = "fmt",
++        strip_prefix = "fmt-9bdd1596cef1b57b9556f8bef32dc4a32322ef3e",
++        url = "https://github.com/fmtlib/fmt/archive/9bdd1596cef1b57b9556f8bef32dc4a32322ef3e.zip",
++        sha256 = "e4697ec13668347953c9f4b9670c8ae46ebe19cb71146ab4d0df37bcdd83108c",
++        build_file = "@org_pytorch//third_party:fmt.BUILD",
++    )
++
++    #http_archive(
++    #    name = "tensorpipe",
++    #    strip_prefix = "tensorpipe-3b8089c9c6717038cff44b70b881d0ad6c93e679",
++    #    url = "https://github.com/pytorch/tensorpipe/archive/3b8089c9c6717038cff44b70b881d0ad6c93e679.zip",
++    #    sha256 = "fd61f25f8799055b44d07b47a1d8a5f69ce6dc7657f5c653017a532c6bee97f0",
++    #    build_file = "@org_pytorch//third_party:tensorpipe.BUILD",
++    #    workspace_file = "@org_pytorch//third_party:tensorpipe.workspace",
++    #)
++
++    new_git_repository(
++        name = "tensorpipe",
++        commit = "3b8089c9c6717038cff44b70b881d0ad6c93e679",
++        init_submodules = 1,
++        remote = "https://github.com/pytorch/tensorpipe.git",
++        build_file = "@org_pytorch//third_party:tensorpipe.BUILD",
++    )
++
++    http_archive(
++        name = "libuv",
++        strip_prefix = "libuv-02a9e1be252b623ee032a3137c0b0c94afbe6809",
++        urls = ["https://github.com/libuv/libuv/archive/02a9e1be252b623ee032a3137c0b0c94afbe6809.zip"],
++        sha256 = "cbf4db0027ce93ff1e55e18aa594055254da7a2d7c087238c7e570ce025cd5d0",
++        build_file = "@org_pytorch//third_party:libuv.BUILD",
++    )
++
++    http_archive(
++        name = "pybind11",
++        strip_prefix = "pybind11-a23996fce38ff6ccfbcdc09f1e63f2c4be5ea2ef",
++        urls = ["https://github.com/pybind/pybind11/archive/a23996fce38ff6ccfbcdc09f1e63f2c4be5ea2ef.zip"],
++        sha256 = "c27b91bdfbb9d371ac4575357c7aa65428a393854eed18af93d91076f3e5a03d",
++    )
+diff --git a/tools/config/defs.bzl b/tools/config/defs.bzl
+index 6ddd0e9..0ef8823 100644
+--- a/tools/config/defs.bzl
++++ b/tools/config/defs.bzl
+@@ -8,7 +8,7 @@ load("@bazel_skylib//lib:selects.bzl", "selects")
+ def if_cuda(if_true, if_false = []):
+     """Helper for selecting based on the whether CUDA is configured. """
+     return selects.with_or({
+-        "@//tools/config:cuda_enabled_and_capable": if_true,
++        "@org_pytorch//tools/config:cuda_enabled_and_capable": if_true,
+         "//conditions:default": if_false,
+     })
+ 
+diff --git a/tools/setup_helpers/generate_code.py b/tools/setup_helpers/generate_code.py
+index c87d5d8..ef6ffda 100644
+--- a/tools/setup_helpers/generate_code.py
++++ b/tools/setup_helpers/generate_code.py
+@@ -42,7 +42,7 @@ def generate_code(ninja_global=None,
+         if not os.path.exists(d):
+             os.makedirs(d)
+     runfiles_dir = os.environ.get("RUNFILES_DIR", None)
+-    data_dir = os.path.join(runfiles_dir, 'pytorch') if runfiles_dir else ''
++    data_dir = os.path.join(runfiles_dir, 'org_pytorch') if runfiles_dir else ''
+     autograd_dir = os.path.join(data_dir, 'tools', 'autograd')
+     tools_jit_templates = os.path.join(data_dir, 'tools', 'jit', 'templates')
+ 
+-- 
+2.7.4
+
